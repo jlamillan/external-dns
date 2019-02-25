@@ -19,13 +19,12 @@ package source
 import (
 	"bytes"
 	"fmt"
-	"sort"
-	"strings"
-	"text/template"
-
 	kubeinformers "k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"sort"
+	"strings"
+	"text/template"
 
 	log "github.com/sirupsen/logrus"
 
@@ -36,9 +35,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 
-	"time"
-
 	"github.com/kubernetes-incubator/external-dns/endpoint"
+	"k8s.io/kubernetes/pkg/util/async"
+	"time"
 )
 
 const (
@@ -65,6 +64,7 @@ type serviceSource struct {
 	podInformer              coreinformers.PodInformer
 	nodeInformer             coreinformers.NodeInformer
 	serviceTypeFilter        map[string]struct{}
+	runner                   *async.BoundedFrequencyRunner
 }
 
 // NewServiceSource creates a new serviceSource with the given config.
@@ -93,21 +93,18 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 	serviceInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				log.Debug("service added")
 			},
 		},
 	)
 	podInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				log.Debug("pod added")
 			},
 		},
 	)
 	nodeInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				log.Debug("node added")
 			},
 		},
 	)
@@ -117,7 +114,7 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 
 	// wait for the local cache to be populated.
 	err = wait.Poll(time.Second, 60*time.Second, func() (bool, error) {
-		return serviceInformer.Informer().HasSynced() == true, nil
+		return serviceInformer.Informer().HasSynced(), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync cache: %v", err)
@@ -517,4 +514,33 @@ func (sc *serviceSource) extractNodePortEndpoints(svc *v1.Service, nodeTargets e
 	}
 
 	return endpoints
+}
+
+func (sc *serviceSource) AddEventHandler(handler func() error, stopChan <-chan struct{}, minInterval time.Duration) {
+	// Add custom resource event handler
+	log.Debug("Adding (bounded) event handler for service")
+
+	maxInterval := 24 * time.Hour // handler will be called if it has not run in 24 hours
+	burst := 2                    // allow up to two handler burst calls
+	log.Debugf("Adding handler to BoundedFrequencyRunner with minInterval: %v, syncPeriod: %v, bursts: %d",
+		minInterval, maxInterval, burst)
+	sc.runner = async.NewBoundedFrequencyRunner("service-handler", func() {
+		_ = handler()
+	}, minInterval, maxInterval, burst)
+	go sc.runner.Loop(stopChan)
+
+	// run the handler function as soon as the BoundedFrequencyRunner will allow when an update occurs
+	sc.serviceInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				sc.runner.Run()
+			},
+			UpdateFunc: func(old interface{}, new interface{}) {
+				sc.runner.Run()
+			},
+			DeleteFunc: func(obj interface{}) {
+				sc.runner.Run()
+			},
+		},
+	)
 }

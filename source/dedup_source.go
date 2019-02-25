@@ -18,6 +18,7 @@ package source
 
 import (
 	log "github.com/sirupsen/logrus"
+	"time"
 
 	"github.com/kubernetes-incubator/external-dns/endpoint"
 )
@@ -55,4 +56,8 @@ func (ms *dedupSource) Endpoints() ([]*endpoint.Endpoint, error) {
 	}
 
 	return result, nil
+}
+
+func (ms *dedupSource) AddEventHandler(handler func() error, stopChan <-chan struct{}, minInterval time.Duration) {
+	ms.source.AddEventHandler(handler, stopChan, minInterval)
 }

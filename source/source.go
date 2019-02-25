@@ -22,6 +22,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kubernetes-incubator/external-dns/endpoint"
 )
@@ -55,6 +56,9 @@ const (
 // Source defines the interface Endpoint sources should implement.
 type Source interface {
 	Endpoints() ([]*endpoint.Endpoint, error)
+	// AddEventHandler adds an event handler function that's called when (supported) sources have changed.
+	// The handler should not be called more than than once per time.Duration and not again after stop channel is closed.
+	AddEventHandler(func() error, <-chan struct{}, time.Duration)
 }
 
 func getTTLFromAnnotations(annotations map[string]string) (endpoint.TTL, error) {

@@ -34,6 +34,7 @@ import (
 	"github.com/kubernetes-incubator/external-dns/provider"
 	"github.com/kubernetes-incubator/external-dns/registry"
 	"github.com/kubernetes-incubator/external-dns/source"
+	"time"
 )
 
 func main() {
@@ -86,9 +87,15 @@ func main() {
 
 	// Lookup all the selected sources by names and pass them the desired configuration.
 	sources, err := source.ByNames(&source.SingletonClientGenerator{
-		KubeConfig:     cfg.KubeConfig,
-		KubeMaster:     cfg.Master,
-		RequestTimeout: cfg.RequestTimeout,
+		KubeConfig: cfg.KubeConfig,
+		KubeMaster: cfg.Master,
+		// If update events are enabled, disable timeout.
+		RequestTimeout: func() time.Duration {
+			if cfg.UpdateEvents {
+				return 0
+			}
+			return cfg.RequestTimeout
+		}(),
 	}, cfg.Sources, sourceCfg)
 	if err != nil {
 		log.Fatal(err)
@@ -234,6 +241,14 @@ func main() {
 		Registry: r,
 		Policy:   policy,
 		Interval: cfg.Interval,
+	}
+
+	if cfg.UpdateEvents {
+		// Add RunOnce as the handler function that will be called when ingress/service sources have changed.
+		// Note that k8s Informers will perform an initial list operation, which results in the handler
+		// function initially being called for every Service/Ingress that exists. Also note setting
+		// minInterval would prevent a majority of these duplicate calls.
+		ctrl.Source.AddEventHandler(ctrl.RunOnce, stopChan, 1*time.Minute)
 	}
 
 	if cfg.Once {
